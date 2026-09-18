@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "launchdarkly-scheduled-changes-dashboard",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    // `us` (app.launchdarkly.com) or `federal` (app.launchdarkly.us).
+    "LD_INSTANCE": "us"
+    // "PUBLIC_ORIGIN": "https://your-worker.workers.dev"
+  }
+  // LD_CLIENT_ID, LD_CLIENT_SECRET and SESSION_SECRET are secrets:
+  //   wrangler secret put LD_CLIENT_ID
+  //   wrangler secret put LD_CLIENT_SECRET
+  //   wrangler secret put SESSION_SECRET
+}

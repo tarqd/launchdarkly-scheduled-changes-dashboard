@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit the real file.
+LD_CLIENT_ID="your-oauth-client-id"
+LD_CLIENT_SECRET="your-oauth-client-secret"
+SESSION_SECRET="generate-with: openssl rand -hex 32"
+LD_INSTANCE="us"
+PUBLIC_ORIGIN="http://localhost:8787"
