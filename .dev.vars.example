@@ -2,5 +2,8 @@
 LD_CLIENT_ID="your-oauth-client-id"
 LD_CLIENT_SECRET="your-oauth-client-secret"
 SESSION_SECRET="generate-with: openssl rand -hex 32"
+
+# Must match the redirect URI registered on the OAuth client, exactly.
+LD_REDIRECT_URI="http://localhost:8787/auth/callback"
+
 LD_INSTANCE="us"
-PUBLIC_ORIGIN="http://localhost:8787"

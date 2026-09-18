@@ -38,15 +38,25 @@ export function ldHost(env: Env): string {
 }
 
 /**
- * The origin to build the redirect URI from. LaunchDarkly matches the registered
- * redirect URI exactly and allows only one per client, so this has to be stable.
+ * The origin this deployment is reachable at, used for same-origin redirects
+ * back into the app after the flow completes.
  */
 export function publicOrigin(request: Request, env: Env): string {
   if (env.PUBLIC_ORIGIN) return env.PUBLIC_ORIGIN.replace(/\/$/, '');
+  if (env.LD_REDIRECT_URI) return new URL(env.LD_REDIRECT_URI).origin;
   return new URL(request.url).origin;
 }
 
+/**
+ * LaunchDarkly matches the registered redirect URI exactly and allows only one
+ * per client, so `LD_REDIRECT_URI` is the honest way to configure it: set it to
+ * the same string you registered and the two cannot drift. Deriving it from the
+ * request works for a plain `*.workers.dev` deployment but silently produces the
+ * wrong value behind a custom domain, a route, or a preview URL — and the failure
+ * surfaces as an opaque rejection from the token endpoint.
+ */
 export function redirectUri(request: Request, env: Env): string {
+  if (env.LD_REDIRECT_URI) return env.LD_REDIRECT_URI;
   return `${publicOrigin(request, env)}${OAUTH_CALLBACK_PATH}`;
 }
 

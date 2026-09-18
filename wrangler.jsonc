@@ -13,7 +13,11 @@
   "vars": {
     // `us` (app.launchdarkly.com) or `federal` (app.launchdarkly.us).
     "LD_INSTANCE": "us"
-    // "PUBLIC_ORIGIN": "https://your-worker.workers.dev"
+
+    // Set this to the redirect URI you registered on the OAuth client, exactly.
+    // LaunchDarkly matches it character for character and allows only one per
+    // client, so pinning it here beats deriving it from the request.
+    // "LD_REDIRECT_URI": "https://your-worker.workers.dev/auth/callback"
   }
   // LD_CLIENT_ID, LD_CLIENT_SECRET and SESSION_SECRET are secrets:
   //   wrangler secret put LD_CLIENT_ID

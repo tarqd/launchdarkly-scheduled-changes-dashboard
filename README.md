@@ -75,6 +75,22 @@ lever** — scanning production only is roughly four times cheaper than scanning
 environments. The client honours LaunchDarkly's `X-Ratelimit-Reset` and retries with backoff,
 and the scan reports progress while it runs.
 
+### Where this differs from launchdarkly-dependency-viz
+
+The OAuth flow here follows the same shape as the `launchdarkly-labs/launchdarkly-dependency-viz`
+handlers — same `/trust/oauth/authorize` and `/trust/oauth/token` endpoints, same `reader`
+scope, same form-encoded code exchange — with two deliberate changes:
+
+- **The token stays on the server.** That app finishes the flow by redirecting to
+  `/#access_token=…` and letting the browser call the LaunchDarkly API directly. Simpler, and
+  it needs no proxy at all — but a token in the URL fragment lands in browser history and is
+  readable by anything running on the page. Here the token is sealed into an httpOnly cookie
+  and the browser talks to the allowlisted proxy instead. That is also what makes the
+  fan-out affordable, since each browser request costs the Worker one subrequest.
+- **The `state` parameter is checked.** The reference handlers omit it, which leaves the
+  callback open to CSRF. This app puts a random `state` in a short-lived sealed cookie and
+  rejects a callback whose `state` does not match, is missing, or is older than ten minutes.
+
 ## Setup
 
 ### 1. Register an OAuth client
@@ -127,8 +143,9 @@ gitignored.
 | `LD_CLIENT_ID` | yes | OAuth client id |
 | `LD_CLIENT_SECRET` | yes | OAuth client secret |
 | `SESSION_SECRET` | yes | Seals the session cookie. Rotating it signs everyone out. |
+| `LD_REDIRECT_URI` | recommended | The redirect URI **exactly** as registered on the client. When unset it is derived from the request origin, which is right for a plain `*.workers.dev` deployment and wrong behind a custom domain or a preview URL — and the failure shows up as an opaque rejection from the token endpoint. |
 | `LD_INSTANCE` | no | `us` (default) or `federal` for `app.launchdarkly.us` |
-| `PUBLIC_ORIGIN` | no | Set only if something in front of the Worker rewrites the Host header; the redirect URI has to match what you registered |
+| `PUBLIC_ORIGIN` | no | Only used when `LD_REDIRECT_URI` is unset and something in front of the Worker rewrites the Host header |
 
 ### 3. Run it
 
