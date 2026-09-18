@@ -1,1 +1,258 @@
-# launchdarkly-scheduled-changes-dashboard
+# LaunchDarkly scheduled changes dashboard
+
+A single pane of glass for every **scheduled change** and **future-dated approval request**
+in a LaunchDarkly account.
+
+LaunchDarkly will happily let you schedule a flag change six weeks out, in any environment,
+in any project. What it will not do is show you all of them together — scheduled changes are
+read one flag and one environment at a time, so "what is about to happen to our flags?" has no
+answer in the product UI. This app answers it.
+
+It is read-only, it deploys as a single Cloudflare Worker, and you can sign in either with
+OAuth or by pasting a LaunchDarkly access token.
+
+![The dashboard: headline counts, a per-day volume chart, and the agenda of upcoming changes](docs/screenshots/dashboard.png)
+
+## What you get
+
+- **A day-by-day volume chart** of the next three weeks, split by whether a change will just
+  execute or is still waiting on an approval.
+- **An agenda** — every upcoming change in execution order, grouped into Today / Tomorrow /
+  Later this week / Next week / Later, with the flag, project, environment, status, and the
+  change itself written out in plain language (`{"kind":"updateFallthroughVariationOrRollout",
+  "rolloutWeights":{…}}` becomes *"Set default rollout to 25% / 75%"*).
+- **Headline counts** for the next 24 hours, the next 7 days, changes blocked on approval,
+  conflicts LaunchDarkly has flagged, and anything past its execution date.
+- **A sortable table** of the same data, so every value in the chart is reachable as text.
+- Filters for project, environment, status, change type, and free-text search.
+- Light and dark themes, both built from LaunchPad tokens.
+
+Hovering a column reads out that day's split:
+
+![The volume chart with a tooltip showing one scheduled change and one awaiting approval on a single day](docs/screenshots/chart.png)
+
+Dark mode is its own set of steps from the same LaunchPad ramps, not an inverted light theme:
+
+![The same dashboard in dark mode](docs/screenshots/dashboard-dark.png)
+
+Sign in with OAuth, or paste an access token if registering an OAuth client is not an option:
+
+![The sign-in screen, with the LaunchDarkly OAuth button and an expanded access-token form](docs/screenshots/login.png)
+
+A deployment with no OAuth client configured offers the token form on its own:
+
+![The sign-in screen with only the access-token form](docs/screenshots/login-token-only.png)
+
+## How it works
+
+```
+browser  ──►  Cloudflare Worker  ──►  app.launchdarkly.com/api/v2
+  │             │
+  │             ├─ /auth/login, /auth/callback   OAuth 2.0 authorization code flow
+  │             ├─ /auth/token                   sign in with an access token
+  │             ├─ /auth/logout                  drop the session cookie
+  │             ├─ /api/auth-methods             which sign-in methods are configured
+  │             ├─ /api/me                       who is signed in
+  │             ├─ /api/ld/*                     read-only, allowlisted API proxy
+  │             └─ everything else               the built SPA, from the assets binding
+  │
+  └─ React 19 + @launchpad-ui/components
+```
+
+Three design decisions worth knowing about:
+
+**The access token never reaches the browser.** After the code exchange, the token is sealed
+into an AES-GCM blob (`shared/session.ts`) and stored in an `httpOnly`, `Secure`, `SameSite=Lax`
+cookie. Only the Worker holds the key, so JavaScript on the page cannot read the token even if
+something else on the page goes wrong.
+
+**The proxy is an allowlist, not a pass-through.** `worker/proxy.ts` forwards `GET` and only
+`GET`, and only to the fourteen anchored path patterns the dashboard actually reads. A path that
+does not match is rejected before a request leaves the Worker. This is what keeps a `reader`
+token from being usable for anything beyond this dashboard's job.
+
+**The fan-out happens in the browser, through the proxy.** Scheduled changes live at
+`/projects/{p}/flags/{f}/environments/{e}/scheduled-changes`, so finding them all means one
+request per flag × environment pair. Doing that inside a single Worker invocation would hit the
+subrequest limit immediately. Instead the browser issues the requests at bounded concurrency
+(`src/lib/scan.ts`), and each one costs the Worker a single subrequest. Account-wide approval
+requests come from one paginated endpoint and are merged in.
+
+Cost is flags × environments, so **narrowing the environment filter and rescanning is the big
+lever** — scanning production only is roughly four times cheaper than scanning four
+environments. The client honours LaunchDarkly's `X-Ratelimit-Reset` and retries with backoff,
+and the scan reports progress while it runs.
+
+### Where this differs from launchdarkly-dependency-viz
+
+The OAuth flow here follows the same shape as the `launchdarkly-labs/launchdarkly-dependency-viz`
+handlers — same `/trust/oauth/authorize` and `/trust/oauth/token` endpoints, same `reader`
+scope, same form-encoded code exchange — with two deliberate changes:
+
+- **The token stays on the server.** That app finishes the flow by redirecting to
+  `/#access_token=…` and letting the browser call the LaunchDarkly API directly. Simpler, and
+  it needs no proxy at all — but a token in the URL fragment lands in browser history and is
+  readable by anything running on the page. Here the token is sealed into an httpOnly cookie
+  and the browser talks to the allowlisted proxy instead. That is also what makes the
+  fan-out affordable, since each browser request costs the Worker one subrequest.
+- **The `state` parameter is checked.** The reference handlers omit it, which leaves the
+  callback open to CSRF. This app puts a random `state` in a short-lived sealed cookie and
+  rejects a callback whose `state` does not match, is missing, or is older than ten minutes.
+
+## Setup
+
+You need `SESSION_SECRET` either way. An OAuth client is optional: without one, the app offers
+token sign-in only, which is the quickest way to try it and the only option on an account you
+cannot register a client on.
+
+### 1. Register an OAuth client (optional)
+
+LaunchDarkly has no UI for this; use the API with an access token that can write `acct`
+resources (an Admin's token).
+
+```sh
+curl -X POST https://app.launchdarkly.com/api/v2/oauth/clients \
+  -H "Authorization: $LD_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Scheduled changes dashboard",
+    "description": "Read-only dashboard of upcoming scheduled flag changes",
+    "redirectUri": "https://YOUR-WORKER-HOST/auth/callback"
+  }'
+```
+
+The response contains `_clientId` and `_clientSecret`. **`_clientSecret` is shown exactly
+once** — if you lose it you have to register a new client.
+
+Constraints LaunchDarkly places on the redirect URI, which shape the config below:
+
+- one redirect URI per client, matched exactly
+- no query parameters in the URI
+- so the URI is always `<origin>/auth/callback`
+
+For local development, register a second client with
+`redirectUri: "http://localhost:8787/auth/callback"` — or skip this step entirely and use token
+sign-in.
+
+By default a new client is **unverified**, which means only members of your own LaunchDarkly
+organization can authorize it. That is exactly what you want for an internal dashboard.
+
+### 2. Configure the Worker
+
+```sh
+npm install
+
+# Required either way.
+npx wrangler secret put SESSION_SECRET   # openssl rand -hex 32
+
+# Only if you registered an OAuth client above.
+npx wrangler secret put LD_CLIENT_ID
+npx wrangler secret put LD_CLIENT_SECRET
+```
+
+For `wrangler dev`, copy `.dev.vars.example` to `.dev.vars` and fill it in. `.dev.vars` is
+gitignored.
+
+| Variable | Required | What it does |
+|---|---|---|
+| `SESSION_SECRET` | yes | Seals the session cookie. Rotating it signs everyone out. |
+| `LD_CLIENT_ID` | for OAuth | OAuth client id. Omit both client vars to offer token sign-in only. |
+| `LD_CLIENT_SECRET` | for OAuth | OAuth client secret |
+| `LD_REDIRECT_URI` | recommended | The redirect URI **exactly** as registered on the client. When unset it is derived from the request origin, which is right for a plain `*.workers.dev` deployment and wrong behind a custom domain or a preview URL — and the failure shows up as an opaque rejection from the token endpoint. |
+| `LD_INSTANCE` | no | `us` (default) or `federal` for `app.launchdarkly.us` |
+| `PUBLIC_ORIGIN` | no | Only used when `LD_REDIRECT_URI` is unset and something in front of the Worker rewrites the Host header |
+
+### 3. Run it
+
+```sh
+npm run build     # vite build -> dist/
+npm run dev       # wrangler dev: Worker + assets on http://localhost:8787
+npm run deploy    # build, then wrangler deploy
+```
+
+`npm run dev:vite` runs Vite alone on port 5173, which is useful for UI work but has no
+`/auth` or `/api` routes behind it.
+
+## Signing in
+
+Two ways, and the app treats the result identically once you are in:
+
+**OAuth** requests the **`reader`** scope. An OAuth app can never exceed the permissions of the
+member who authorized it, and the `state` parameter is generated and verified on the callback.
+This is the better default: nothing long-lived is pasted anywhere, and access follows the
+member.
+
+**An access token** — personal or service — is posted once to `/auth/token`, checked against
+`GET /api/v2/caller-identity`, and then treated exactly like an OAuth token. Use it when
+registering an OAuth client is not possible; a reader token is sufficient. Two details worth
+knowing:
+
+- LaunchDarkly wants an OAuth token as `Authorization: Bearer <token>` and an access token as
+  the bare `Authorization: <token>`, so the session records which kind it holds. Sending the
+  wrong form is an unexplained 401.
+- A service token has no member behind it, so there is no name or email to show; the header
+  falls back to the token's name.
+
+`/auth/token` hands out a session, so it rejects cross-origin requests (`Sec-Fetch-Site` plus an
+`Origin` check) and requires a JSON content type, which an HTML form cannot send. The token is
+never written to `localStorage`, never put in a URL, and never returned to the browser.
+
+Either way, a credential that cannot read an environment will not see its scheduled changes
+here either. Those denials are expected on a large account: the scan collects them and reports
+the count rather than failing, and the results shown are complete for everything that could be
+read.
+
+Nothing in this app writes to LaunchDarkly. There is no code path that issues a non-`GET`
+request to the API.
+
+## Development
+
+```sh
+npm run typecheck     # app and worker, separately (different global types)
+npm test              # vitest
+npm run lint          # biome
+npm run format        # biome --write
+npm run screenshots   # regenerate docs/screenshots from the built app
+```
+
+`npm run screenshots` needs a build first (`npm run build`). It serves `dist/`, answers the
+app's API calls from `scripts/fixtures.mjs`, and captures the images in this README — so it
+also works as a smoke test of the built bundle, failing on any console or page error. The
+fixtures are a made-up account; no real data goes into the docs.
+
+| Path | What lives there |
+|---|---|
+| `worker/` | Both sign-in flows, session loading, the read-only proxy, asset serving |
+| `shared/` | Code used by both sides: session sealing, constants. Platform-neutral. |
+| `src/api/` | Typed client for the proxy, with pagination and rate-limit retries |
+| `src/lib/` | The domain logic: instruction humanizer, change model, scan, filters, time |
+| `src/components/` | LaunchPad-based UI |
+| `test/` | Unit tests for the pure logic and the proxy allowlist |
+| `scripts/` | Screenshot generation and its fixture account |
+| `docs/screenshots/` | The images in this README |
+
+### Chart colours
+
+`src/lib/palette.ts` documents the two series colours and why those specific steps: they are
+LaunchPad ramp steps chosen so the pair passes a full palette check — lightness band, chroma
+floor, colour-vision-deficiency separation, normal-vision separation, and contrast against the
+surface — in light *and* dark mode. Dark mode is a deliberate re-step from the same ramps, not
+an automatic inversion. Series identity is always carried by a legend and a text label as well
+as the colour; status (conflict, approval state) uses LaunchPad's reserved status colours with
+an icon and a word.
+
+### Adding an instruction kind
+
+When LaunchDarkly adds a semantic-patch instruction, `describeInstruction` in
+`src/lib/instructions.ts` falls back to a de-camel-cased kind (`someNewInstruction` →
+*"Some new instruction"*), so nothing renders blank. Add a `case` for a better sentence and an
+entry in `CATEGORY_BY_KIND` so it groups and filters correctly.
+
+## Known limits
+
+- **There is no "all scheduled changes" endpoint.** The scan is the workaround, and on a large
+  account a full unfiltered pass is thousands of requests. Filter, then rescan.
+- **Results are a snapshot**, taken when the scan ran. The header shows the scan time; use
+  Rescan to refresh.
+- **Approval requests are fetched account-wide** and filtered client-side to the chosen scope,
+  which keeps that part of the scan to a single paginated endpoint.
