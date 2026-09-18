@@ -10,8 +10,8 @@ import {
 } from '@launchpad-ui/components';
 import { Icon } from '@launchpad-ui/icons';
 import { useEffect, useMemo, useState } from 'react';
-import { fetchIdentity, logout } from './api/client';
-import type { CallerIdentity } from './api/types';
+import { fetchAuthMethods, fetchIdentity, logout } from './api/client';
+import type { AuthMethods, CallerIdentity } from './api/types';
 import { Agenda } from './components/Agenda';
 import { ChangeTable } from './components/ChangeTable';
 import { DEFAULT_FILTERS, FilterBar, type Filters } from './components/FilterBar';
@@ -38,6 +38,7 @@ function authErrorFromUrl(): string | null {
 
 export function App() {
   const [identity, setIdentity] = useState<CallerIdentity | null>(null);
+  const [methods, setMethods] = useState<AuthMethods>({ oauth: true, token: true });
   const [authError] = useState<string | null>(authErrorFromUrl);
   const [theme, toggleTheme] = useTheme();
 
@@ -46,6 +47,9 @@ export function App() {
     fetchIdentity(controller.signal)
       .then(setIdentity)
       .catch(() => setIdentity({ authenticated: false }));
+    fetchAuthMethods(controller.signal)
+      .then(setMethods)
+      .catch(() => {});
     return () => controller.abort();
   }, []);
 
@@ -59,9 +63,23 @@ export function App() {
     );
   }
 
-  if (!identity.authenticated) return <LoginScreen authError={authError} />;
+  if (!identity.authenticated) return <LoginScreen authError={authError} methods={methods} />;
 
   return <Dashboard identity={identity} theme={theme} onToggleTheme={toggleTheme} />;
+}
+
+/**
+ * Who the session belongs to. With an access token there may be no member at
+ * all (a service token), so fall back to the token's name — it matters, because
+ * the credential decides what the scan can see.
+ */
+function signedInAs(identity: CallerIdentity): string {
+  if (identity.name ?? identity.email) return (identity.name ?? identity.email) as string;
+  if (identity.authKind === 'token') {
+    const label = identity.serviceToken ? 'service token' : 'access token';
+    return identity.tokenName ? `${identity.tokenName} (${label})` : `Signed in with an ${label}`;
+  }
+  return 'Signed in';
 }
 
 interface DashboardProps {
@@ -128,7 +146,7 @@ function Dashboard({ identity, theme, onToggleTheme }: DashboardProps) {
               Scheduled changes
             </Heading>
             <Text size="small" elementType="span">
-              {identity.name ?? identity.email ?? 'Signed in'}
+              {signedInAs(identity)}
               {result ? ` · scanned ${formatDateTime(result.scannedAt)}` : ''}
             </Text>
           </div>

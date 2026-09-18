@@ -8,7 +8,8 @@ in any project. What it will not do is show you all of them together — schedul
 read one flag and one environment at a time, so "what is about to happen to our flags?" has no
 answer in the product UI. This app answers it.
 
-It is an OAuth app, it is read-only, and it deploys as a single Cloudflare Worker.
+It is read-only, it deploys as a single Cloudflare Worker, and you can sign in either with
+OAuth or by pasting a LaunchDarkly access token.
 
 ![The dashboard: headline counts, a per-day volume chart, and the agenda of upcoming changes](docs/screenshots/dashboard.png)
 
@@ -34,9 +35,13 @@ Dark mode is its own set of steps from the same LaunchPad ramps, not an inverted
 
 ![The same dashboard in dark mode](docs/screenshots/dashboard-dark.png)
 
-Signing in is a single button — the app holds no credentials of its own:
+Sign in with OAuth, or paste an access token if registering an OAuth client is not an option:
 
-![The sign-in screen, offering to sign in with LaunchDarkly](docs/screenshots/login.png)
+![The sign-in screen, with the LaunchDarkly OAuth button and an expanded access-token form](docs/screenshots/login.png)
+
+A deployment with no OAuth client configured offers the token form on its own:
+
+![The sign-in screen with only the access-token form](docs/screenshots/login-token-only.png)
 
 ## How it works
 
@@ -44,9 +49,12 @@ Signing in is a single button — the app holds no credentials of its own:
 browser  ──►  Cloudflare Worker  ──►  app.launchdarkly.com/api/v2
   │             │
   │             ├─ /auth/login, /auth/callback   OAuth 2.0 authorization code flow
-  │             ├─ /api/me                        who is signed in
-  │             ├─ /api/ld/*                      read-only, allowlisted API proxy
-  │             └─ everything else                the built SPA, from the assets binding
+  │             ├─ /auth/token                   sign in with an access token
+  │             ├─ /auth/logout                  drop the session cookie
+  │             ├─ /api/auth-methods             which sign-in methods are configured
+  │             ├─ /api/me                       who is signed in
+  │             ├─ /api/ld/*                     read-only, allowlisted API proxy
+  │             └─ everything else               the built SPA, from the assets binding
   │
   └─ React 19 + @launchpad-ui/components
 ```
@@ -93,7 +101,11 @@ scope, same form-encoded code exchange — with two deliberate changes:
 
 ## Setup
 
-### 1. Register an OAuth client
+You need `SESSION_SECRET` either way. An OAuth client is optional: without one, the app offers
+token sign-in only, which is the quickest way to try it and the only option on an account you
+cannot register a client on.
+
+### 1. Register an OAuth client (optional)
 
 LaunchDarkly has no UI for this; use the API with an access token that can write `acct`
 resources (an Admin's token).
@@ -119,7 +131,8 @@ Constraints LaunchDarkly places on the redirect URI, which shape the config belo
 - so the URI is always `<origin>/auth/callback`
 
 For local development, register a second client with
-`redirectUri: "http://localhost:8787/auth/callback"`.
+`redirectUri: "http://localhost:8787/auth/callback"` — or skip this step entirely and use token
+sign-in.
 
 By default a new client is **unverified**, which means only members of your own LaunchDarkly
 organization can authorize it. That is exactly what you want for an internal dashboard.
@@ -129,10 +142,12 @@ organization can authorize it. That is exactly what you want for an internal das
 ```sh
 npm install
 
-# Secrets (never in wrangler.jsonc)
+# Required either way.
+npx wrangler secret put SESSION_SECRET   # openssl rand -hex 32
+
+# Only if you registered an OAuth client above.
 npx wrangler secret put LD_CLIENT_ID
 npx wrangler secret put LD_CLIENT_SECRET
-npx wrangler secret put SESSION_SECRET   # openssl rand -hex 32
 ```
 
 For `wrangler dev`, copy `.dev.vars.example` to `.dev.vars` and fill it in. `.dev.vars` is
@@ -140,9 +155,9 @@ gitignored.
 
 | Variable | Required | What it does |
 |---|---|---|
-| `LD_CLIENT_ID` | yes | OAuth client id |
-| `LD_CLIENT_SECRET` | yes | OAuth client secret |
 | `SESSION_SECRET` | yes | Seals the session cookie. Rotating it signs everyone out. |
+| `LD_CLIENT_ID` | for OAuth | OAuth client id. Omit both client vars to offer token sign-in only. |
+| `LD_CLIENT_SECRET` | for OAuth | OAuth client secret |
 | `LD_REDIRECT_URI` | recommended | The redirect URI **exactly** as registered on the client. When unset it is derived from the request origin, which is right for a plain `*.workers.dev` deployment and wrong behind a custom domain or a preview URL — and the failure shows up as an opaque rejection from the token endpoint. |
 | `LD_INSTANCE` | no | `us` (default) or `federal` for `app.launchdarkly.us` |
 | `PUBLIC_ORIGIN` | no | Only used when `LD_REDIRECT_URI` is unset and something in front of the Worker rewrites the Host header |
@@ -158,13 +173,34 @@ npm run deploy    # build, then wrangler deploy
 `npm run dev:vite` runs Vite alone on port 5173, which is useful for UI work but has no
 `/auth` or `/api` routes behind it.
 
-## Permissions
+## Signing in
 
-The app requests the **`reader`** scope. An OAuth app can never exceed the permissions of the
-member who authorized it, so a member who cannot read an environment will not see its scheduled
-changes here either. Those denials are expected on a large account: the scan collects them and
-reports the count rather than failing, and the results shown are complete for everything that
-could be read.
+Two ways, and the app treats the result identically once you are in:
+
+**OAuth** requests the **`reader`** scope. An OAuth app can never exceed the permissions of the
+member who authorized it, and the `state` parameter is generated and verified on the callback.
+This is the better default: nothing long-lived is pasted anywhere, and access follows the
+member.
+
+**An access token** — personal or service — is posted once to `/auth/token`, checked against
+`GET /api/v2/caller-identity`, and then treated exactly like an OAuth token. Use it when
+registering an OAuth client is not possible; a reader token is sufficient. Two details worth
+knowing:
+
+- LaunchDarkly wants an OAuth token as `Authorization: Bearer <token>` and an access token as
+  the bare `Authorization: <token>`, so the session records which kind it holds. Sending the
+  wrong form is an unexplained 401.
+- A service token has no member behind it, so there is no name or email to show; the header
+  falls back to the token's name.
+
+`/auth/token` hands out a session, so it rejects cross-origin requests (`Sec-Fetch-Site` plus an
+`Origin` check) and requires a JSON content type, which an HTML form cannot send. The token is
+never written to `localStorage`, never put in a URL, and never returned to the browser.
+
+Either way, a credential that cannot read an environment will not see its scheduled changes
+here either. Those denials are expected on a large account: the scan collects them and reports
+the count rather than failing, and the results shown are complete for everything that could be
+read.
 
 Nothing in this app writes to LaunchDarkly. There is no code path that issues a non-`GET`
 request to the API.
@@ -186,7 +222,7 @@ fixtures are a made-up account; no real data goes into the docs.
 
 | Path | What lives there |
 |---|---|
-| `worker/` | OAuth flow, session loading, the read-only proxy, asset serving |
+| `worker/` | Both sign-in flows, session loading, the read-only proxy, asset serving |
 | `shared/` | Code used by both sides: session sealing, constants. Platform-neutral. |
 | `src/api/` | Typed client for the proxy, with pagination and rate-limit retries |
 | `src/lib/` | The domain logic: instruction humanizer, change model, scan, filters, time |

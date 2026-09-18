@@ -9,9 +9,16 @@ import {
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
 } from '../shared/constants';
-import { type SessionData, seal, sealSession, unseal } from '../shared/session';
+import {
+  authorizationHeader,
+  type SessionData,
+  seal,
+  sealSession,
+  unseal,
+} from '../shared/session';
 import { clearCookie, parseCookies, serializeCookie } from './cookies';
 import type { Env } from './env.d';
+import { fetchIdentity } from './identity';
 
 interface OAuthStatePayload {
   state: string;
@@ -145,37 +152,6 @@ export async function exchangeCode(
   return parsed;
 }
 
-/** Ask LaunchDarkly who this token belongs to, so the UI can show the member. */
-async function fetchIdentity(
-  env: Env,
-  accessToken: string,
-): Promise<Pick<SessionData, 'accountId' | 'memberId' | 'email' | 'name'>> {
-  const identity: Pick<SessionData, 'accountId' | 'memberId' | 'email' | 'name'> = {};
-  const callerResponse = await fetch(`${ldHost(env)}/api/v2/caller-identity`, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-  });
-  if (!callerResponse.ok) return identity;
-
-  const caller = (await callerResponse.json()) as { accountId?: string; memberId?: string };
-  identity.accountId = caller.accountId;
-  identity.memberId = caller.memberId;
-  if (!caller.memberId) return identity;
-
-  const memberResponse = await fetch(`${ldHost(env)}/api/v2/members/${caller.memberId}`, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-  });
-  if (!memberResponse.ok) return identity;
-
-  const member = (await memberResponse.json()) as {
-    email?: string;
-    firstName?: string;
-    lastName?: string;
-  };
-  identity.email = member.email;
-  identity.name = [member.firstName, member.lastName].filter(Boolean).join(' ') || member.email;
-  return identity;
-}
-
 /** GET /auth/callback - verify state, exchange the code, set the session cookie. */
 export async function handleCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -210,13 +186,15 @@ export async function handleCallback(request: Request, env: Env): Promise<Respon
   }
 
   const now = Date.now();
+  const identity = await fetchIdentity(env, authorizationHeader(token.access_token, 'oauth'));
   const session: SessionData = {
     accessToken: token.access_token,
+    authKind: 'oauth',
     refreshToken: token.refresh_token,
     expiresAt: token.expires_in ? now + token.expires_in * 1000 : undefined,
     sessionExpiresAt: now + SESSION_MAX_AGE_SECONDS * 1000,
     instance: instanceOf(env),
-    ...(await fetchIdentity(env, token.access_token)),
+    ...identity.identity,
   };
 
   const headers = new Headers({ 'Cache-Control': 'no-store' });

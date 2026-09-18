@@ -1,5 +1,10 @@
 import { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from '../shared/constants';
-import { type SessionData, sealSession, unsealSession } from '../shared/session';
+import {
+  type SessionData,
+  sealSession,
+  sessionAuthorization,
+  unsealSession,
+} from '../shared/session';
 import { parseCookies, serializeCookie } from './cookies';
 import type { Env } from './env.d';
 import { ldHost, refreshSession } from './oauth';
@@ -45,6 +50,10 @@ export async function loadSession(request: Request, env: Env): Promise<LoadedSes
 
   const session = await unsealSession(sealed, env.SESSION_SECRET);
   if (!session) return null;
+
+  // An API access token has nothing to refresh: it is valid until revoked, and
+  // the session cookie's own cap is what eventually ends the session.
+  if (session.authKind === 'token') return { session };
 
   const expiringSoon = session.expiresAt !== undefined && session.expiresAt - Date.now() < 60_000;
   if (!expiringSoon) return { session };
@@ -93,7 +102,7 @@ export async function handleProxy(request: Request, env: Env, loaded: LoadedSess
   const response = await fetch(upstream.toString(), {
     method: 'GET',
     headers: {
-      Authorization: `Bearer ${loaded.session.accessToken}`,
+      Authorization: sessionAuthorization(loaded.session),
       Accept: 'application/json',
       'User-Agent': 'launchdarkly-scheduled-changes-dashboard',
     },
@@ -119,11 +128,14 @@ export function handleMe(loaded: LoadedSession): Response {
   return json(
     {
       authenticated: true,
+      authKind: session.authKind ?? 'oauth',
       instance: session.instance,
       accountId: session.accountId,
       memberId: session.memberId,
       email: session.email,
       name: session.name,
+      tokenName: session.tokenName,
+      serviceToken: session.serviceToken,
       sessionExpiresAt: session.sessionExpiresAt,
     },
     200,

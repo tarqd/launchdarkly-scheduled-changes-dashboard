@@ -117,10 +117,22 @@ export interface ApprovalRequest {
 
 export interface CallerIdentity {
   authenticated: boolean;
+  /** How the session was established. */
+  authKind?: 'oauth' | 'token';
   instance?: 'us' | 'federal';
   accountId?: string;
   memberId?: string;
   email?: string;
   name?: string;
+  /** Name of the API access token, when signed in with one. */
+  tokenName?: string;
+  /** True when the credential is a service token rather than a member's. */
+  serviceToken?: boolean;
   sessionExpiresAt?: number;
+}
+
+/** Which sign-in methods this deployment has been configured for. */
+export interface AuthMethods {
+  oauth: boolean;
+  token: boolean;
 }

@@ -31,7 +31,9 @@ function json(route, body) {
 }
 
 /** Answer /api/me and /api/ld/* from the fixtures instead of the Worker. */
-async function stubApi(page, { authenticated }) {
+async function stubApi(page, { authenticated, methods = { oauth: true, token: true } }) {
+  await page.route('**/api/auth-methods', (route) => json(route, methods));
+
   await page.route('**/api/me', (route) =>
     authenticated
       ? json(route, IDENTITY)
@@ -94,14 +96,29 @@ const browser = await chromium.launch({
 });
 
 try {
-  // Sign-in screen.
+  // Sign-in screen, with the access-token form expanded.
   {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     watchForErrors(page, 'login');
     await stubApi(page, { authenticated: false });
     await page.goto(base, { waitUntil: 'networkidle' });
     await page.getByText('Sign in with LaunchDarkly').waitFor();
+    await page.getByRole('button', { name: /Use an access token instead/ }).click();
+    await page.getByLabel('Access token').waitFor();
     await page.screenshot({ path: `${OUT_DIR}/login.png` });
+    await page.close();
+  }
+
+  // The same screen on a deployment with no OAuth client registered.
+  {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 780 } });
+    watchForErrors(page, 'login-token-only');
+    await stubApi(page, { authenticated: false, methods: { oauth: false, token: true } });
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.getByLabel('Access token').waitFor();
+    const oauthButtons = await page.getByText('Sign in with LaunchDarkly').count();
+    if (oauthButtons > 0) problems.push('login-token-only: OAuth button shown when unconfigured');
+    await page.screenshot({ path: `${OUT_DIR}/login-token-only.png` });
     await page.close();
   }
 

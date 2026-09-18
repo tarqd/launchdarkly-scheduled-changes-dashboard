@@ -1,5 +1,5 @@
 import { sleep } from '../lib/pool';
-import type { CallerIdentity, Paginated } from './types';
+import type { AuthMethods, CallerIdentity, Paginated } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -122,6 +122,42 @@ export async function fetchIdentity(signal?: AbortSignal): Promise<CallerIdentit
   if (response.status === 401) return { authenticated: false };
   if (!response.ok) throw new ApiError(response.status, 'Could not load session', '/api/me');
   return (await response.json()) as CallerIdentity;
+}
+
+export async function fetchAuthMethods(signal?: AbortSignal): Promise<AuthMethods> {
+  try {
+    const response = await fetch('/api/auth-methods', { signal, credentials: 'same-origin' });
+    if (!response.ok) throw new Error(String(response.status));
+    return (await response.json()) as AuthMethods;
+  } catch {
+    // If this cannot be read, offer both and let the attempt report the problem.
+    return { oauth: true, token: true };
+  }
+}
+
+/**
+ * Hand an API access token to the Worker, which validates it against
+ * `caller-identity` and seals it into the session cookie. The token is sent
+ * once, over the same origin, and is never stored in the browser.
+ */
+export async function loginWithToken(token: string): Promise<void> {
+  const response = await fetch('/auth/token', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+
+  if (response.ok) return;
+
+  let message = `Sign-in failed (${response.status})`;
+  try {
+    const body = (await response.json()) as { message?: string };
+    if (body.message) message = body.message;
+  } catch {
+    // Keep the status-based message.
+  }
+  throw new ApiError(response.status, message, '/auth/token');
 }
 
 export async function logout(): Promise<void> {

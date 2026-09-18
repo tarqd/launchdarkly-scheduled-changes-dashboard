@@ -1,8 +1,11 @@
 # Copy to .dev.vars for `wrangler dev`. Never commit the real file.
-LD_CLIENT_ID="your-oauth-client-id"
-LD_CLIENT_SECRET="your-oauth-client-secret"
+
+# Required. Seals the session cookie.
 SESSION_SECRET="generate-with: openssl rand -hex 32"
 
+# Optional: omit all three to offer access-token sign-in only.
+LD_CLIENT_ID="your-oauth-client-id"
+LD_CLIENT_SECRET="your-oauth-client-secret"
 # Must match the redirect URI registered on the OAuth client, exactly.
 LD_REDIRECT_URI="http://localhost:8787/auth/callback"
 

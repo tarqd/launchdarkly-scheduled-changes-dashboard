@@ -9,12 +9,21 @@
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 
+/**
+ * How the session was established. This is not cosmetic: LaunchDarkly wants an
+ * OAuth access token as `Authorization: Bearer <token>` and an API access token
+ * as the bare `Authorization: <token>`, so the wrong one is a flat 401.
+ */
+export type AuthKind = 'oauth' | 'token';
+
 export interface SessionData {
-  /** LaunchDarkly OAuth access token. */
+  /** OAuth access token, or a personal/service access token. */
   accessToken: string;
-  /** Refresh token, when LaunchDarkly issues one. */
+  /** Which kind of credential `accessToken` is. Absent in older cookies. */
+  authKind?: AuthKind;
+  /** Refresh token, when LaunchDarkly issues one. OAuth only. */
   refreshToken?: string;
-  /** Epoch millis at which `accessToken` expires, when known. */
+  /** Epoch millis at which `accessToken` expires, when known. OAuth only. */
   expiresAt?: number;
   /** Epoch millis at which the session itself expires regardless of the token. */
   sessionExpiresAt: number;
@@ -25,6 +34,20 @@ export interface SessionData {
   memberId?: string;
   email?: string;
   name?: string;
+  /** For an API access token, its name in LaunchDarkly, when we can read it. */
+  tokenName?: string;
+  /** True when the credential belongs to a service token rather than a member. */
+  serviceToken?: boolean;
+}
+
+/** The `Authorization` header value for a credential of the given kind. */
+export function authorizationHeader(token: string, kind: AuthKind = 'oauth'): string {
+  return kind === 'token' ? token : `Bearer ${token}`;
+}
+
+/** The `Authorization` header value for a loaded session. */
+export function sessionAuthorization(session: SessionData): string {
+  return authorizationHeader(session.accessToken, session.authKind ?? 'oauth');
 }
 
 async function importKey(secret: string): Promise<CryptoKey> {
